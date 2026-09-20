@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-import graphviz
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
@@ -23,6 +22,8 @@ st.write("뇌졸중을 예측하는 두 가지 모델을 만들고 비교해보�
 
 st.divider()
 
+RANDOM_SEED = 42  # 난수 고정용 숫자
+
 # -----------------------------
 # 2. 데이터 불러오기 (앞 페이지와 동일)
 # -----------------------------
@@ -34,55 +35,70 @@ def load_data():
 
 df = load_data()
 
-# 번호(id) 순으로 정렬 (요청사항: "번호 순으로 정렬해 앞 세 명을 테스트용으로 고정")
-df_sorted = df.sort_values("id").reset_index(drop=True)
-
-RANDOM_SEED = 42  # 난수 고정용 숫자
-
 # -----------------------------
-# 3. 입력 속성 선택
+# 3. 열 이름 <-> 우리말 이름 짝짓기
 # -----------------------------
-st.subheader("1️⃣ 입력으로 사용할 속성 고르기")
+feature_name_kr = {
+    "age": "나이",
+    "avg_glucose_level": "평균 혈당",
+    "bmi": "체질량지수",
+    "hypertension": "고혈압",
+    "heart_disease": "심장병"
+}
+kr_to_col = {v: k for k, v in feature_name_kr.items()}  # 우리말 -> 열 이름 거꾸로 찾기용
 
 all_features = ["age", "avg_glucose_level", "bmi", "hypertension", "heart_disease"]
 default_features = ["age", "avg_glucose_level", "hypertension", "heart_disease"]  # bmi 제외한 넷
 
-selected_features = st.multiselect(
+# -----------------------------
+# 4. 입력 속성 선택 (화면에는 우리말로 표시)
+# -----------------------------
+st.subheader("1️⃣ 입력으로 사용할 속성 고르기")
+
+selected_features_kr = st.multiselect(
     "모델의 입력으로 쓸 속성을 골라보세요. (최소 2개 이상)",
-    options=all_features,
-    default=default_features
+    options=[feature_name_kr[f] for f in all_features],
+    default=[feature_name_kr[f] for f in default_features]
 )
+
+# 우리말 선택 목록을 다시 실제 열 이름으로 변환
+selected_features = [kr_to_col[kr] for kr in selected_features_kr]
 
 # 두 개보다 적게 고르면 안내 후 멈춤
 if len(selected_features) < 2:
     st.warning("⚠️ 속성을 2개 이상 선택해야 모델을 만들 수 있습니다.")
     st.stop()
 
-st.success(f"선택한 속성: {', '.join(selected_features)}")
+st.success(f"선택한 속성: {', '.join(selected_features_kr)}")
 
 st.divider()
 
 # -----------------------------
-# 4. 테스트용 3명 고정, 나머지로 학습
+# 5. 번호 순 정렬 후 10명씩 묶어 앞 3명 테스트용, 나머지 7명 학습용
 # -----------------------------
 st.subheader("2️⃣ 데이터 준비하기")
 
-# 번호 순 정렬된 데이터에서 앞 3명은 테스트용, 나머지는 학습용
-test_df_raw = df_sorted.iloc[:3].copy()
-train_df_raw = df_sorted.iloc[3:].copy()
+df_sorted = df.sort_values("id").reset_index(drop=True)
 
-st.write(f"- 테스트용 데이터: {len(test_df_raw)}명 (번호 순 앞 3명 고정)")
-st.write(f"- 학습에 사용할 수 있는 원본 데이터: {len(train_df_raw)}명")
+# 각 행에 "묶음 안에서 몇 번째인지" 번호를 매김 (0~9 반복)
+df_sorted["group_position"] = df_sorted.index % 10
+
+# 묶음 안 위치가 0,1,2인 사람은 테스트용, 나머지(3~9)는 학습용
+test_df_raw = df_sorted[df_sorted["group_position"] < 3].copy().reset_index(drop=True)
+train_df_raw = df_sorted[df_sorted["group_position"] >= 3].copy().reset_index(drop=True)
+
+st.write(f"- 테스트용 데이터: {len(test_df_raw)}명 (10명씩 묶어 각 묶음의 앞 3명 고정)")
+st.write(f"- 학습에 사용할 수 있는 원본 데이터: {len(train_df_raw)}명 (각 묶음의 나머지 7명)")
 
 # bmi를 선택한 경우에만, 훈련용 데이터의 중앙값으로 결측치를 채움
 if "bmi" in selected_features:
     bmi_median = train_df_raw["bmi"].median()
     train_df_raw["bmi"] = train_df_raw["bmi"].fillna(bmi_median)
     test_df_raw["bmi"] = test_df_raw["bmi"].fillna(bmi_median)
-    st.info(f"bmi 결측치는 훈련용 데이터의 중앙값인 **{bmi_median:.2f}**로 채웠습니다.")
+    st.info(f"체질량지수(bmi) 결측치는 훈련용 데이터의 중앙값인 **{bmi_median:.2f}**로 채웠습니다.")
 
 # -----------------------------
-# 5. 학습 데이터의 크기 맞추기 (언더샘플링)
+# 6. 학습 데이터의 크기 맞추기 (언더샘플링)
 #    - 뇌졸중 있는 사람 수에 맞춰서, 없는 사람 중 무작위로 같은 수만큼 뽑음
 # -----------------------------
 positive_train = train_df_raw[train_df_raw["stroke"] == 1]
@@ -106,7 +122,7 @@ y_test = test_df_raw["stroke"]
 st.divider()
 
 # -----------------------------
-# 6. 모델 세 가지 만들기
+# 7. 모델 세 가지 만들기
 #    - 로지스틱 회귀 (확률로 답하는 모델)
 #    - 의사결정트리 (질문으로 답하는 모델, 깊이 3, 마지막 마디 최소 5명)
 #    - 가장 많은 쪽으로만 답하는 모델 (베이스라인)
@@ -150,19 +166,19 @@ with card3:
 st.divider()
 
 # -----------------------------
-# 7. 산점도 + 로지스틱 회귀 경계선 + 트리 배경색
+# 8. 산점도 + 로지스틱 회귀 경계선 + 트리 배경색
 # -----------------------------
 st.subheader("4️⃣ 두 속성으로 그려보는 그림")
 
-if len(selected_features) < 2:
-    st.stop()
-
 col_x, col_y = st.columns(2)
 with col_x:
-    x_axis = st.selectbox("가로축으로 쓸 속성", options=selected_features, index=0)
+    x_axis_kr = st.selectbox("가로축으로 쓸 속성", options=selected_features_kr, index=0)
 with col_y:
-    remaining = [f for f in selected_features if f != x_axis]
-    y_axis = st.selectbox("세로축으로 쓸 속성", options=remaining, index=0)
+    remaining_kr = [f for f in selected_features_kr if f != x_axis_kr]
+    y_axis_kr = st.selectbox("세로축으로 쓸 속성", options=remaining_kr, index=0)
+
+x_axis = kr_to_col[x_axis_kr]
+y_axis = kr_to_col[y_axis_kr]
 
 # 두 축이 아닌 나머지 속성은 테스트 데이터의 중앙값으로 고정
 other_features = [f for f in selected_features if f not in [x_axis, y_axis]]
@@ -171,7 +187,7 @@ for f in other_features:
     fixed_values[f] = X_test[f].median()
 
 if fixed_values:
-    fixed_text = ", ".join([f"{f} = {v:.2f}" for f, v in fixed_values.items()])
+    fixed_text = ", ".join([f"{feature_name_kr[f]} = {v:.2f}" for f, v in fixed_values.items()])
     st.write(f"📌 두 축이 아닌 속성은 테스트 데이터의 중앙값으로 고정했습니다: **{fixed_text}**")
 else:
     st.write("📌 선택한 속성이 두 개뿐이라 고정할 속성이 없습니다.")
@@ -230,7 +246,7 @@ for label, color in [("뇌졸중 없음", "blue"), ("뇌졸중 있음", "red")]:
         x=subset[x_axis],
         y=subset[y_axis],
         mode="markers",
-        marker=dict(size=14, color=color, line=dict(width=1, color="black")),
+        marker=dict(size=8, color=color, line=dict(width=1, color="black")),
         name=label
     ))
 
@@ -279,9 +295,9 @@ else:
     line_out_of_range = True
 
 fig.update_layout(
-    title=f"{x_axis} vs {y_axis} 산점도와 경계선",
-    xaxis_title=x_axis,
-    yaxis_title=y_axis,
+    title=f"{x_axis_kr} vs {y_axis_kr} 산점도와 경계선",
+    xaxis_title=x_axis_kr,
+    yaxis_title=y_axis_kr,
     height=600
 )
 
@@ -293,29 +309,31 @@ if not line_drawn or line_out_of_range:
 st.divider()
 
 # -----------------------------
-# 8. 의사결정트리 가지 그림 (graphviz)
+# 9. 의사결정트리 가지 그림 (DOT 문자열 + st.graphviz_chart)
 # -----------------------------
 st.subheader("5️⃣ 의사결정트리 가지 그림")
 
-def build_tree_graph(tree_model, feature_names, X_train, y_train):
+def build_tree_dot(tree_model, feature_names_col, feature_names_kr_dict, X_train, y_train):
     """
-    graphviz.Digraph를 이용해 의사결정트리를 직접 그려주는 함수.
+    graphviz 패키지 없이, DOT 언어 문자열을 직접 만들어서
+    st.graphviz_chart()에 넘길 수 있도록 하는 함수.
     각 마디에 인원 수, 뇌졸중인 사람 수, 비율을 함께 표시하고,
     답을 내는 마디는 예측 결과에 따라 색을 다르게 칠한다.
     """
     tree_ = tree_model.tree_
-    graph = graphviz.Digraph()
-    graph.attr("node", shape="box", fontname="Malgun Gothic")
-    graph.attr("edge", fontname="Malgun Gothic")
 
-    # 각 마디(노드)에 도달하는 훈련 데이터의 인덱스를 계산하기 위해 decision_path 사용
+    # 각 마디(노드)에 도달하는 훈련 데이터의 위치를 계산
     node_indicator = tree_model.decision_path(X_train)
-    leaf_id_all = tree_model.apply(X_train)
+    y_train_reset = y_train.reset_index(drop=True)
 
     def get_node_samples(node_id):
-        # 해당 노드를 지나가는 모든 훈련 데이터의 위치(True/False)를 가져옴
         sample_mask = node_indicator[:, node_id].toarray().ravel().astype(bool)
-        return y_train[sample_mask]
+        return y_train_reset[sample_mask]
+
+    dot_lines = []
+    dot_lines.append("digraph Tree {")
+    dot_lines.append('node [shape=box, fontname="Malgun Gothic", style=filled];')
+    dot_lines.append('edge [fontname="Malgun Gothic"];')
 
     def recurse(node_id):
         samples_y = get_node_samples(node_id)
@@ -326,16 +344,16 @@ def build_tree_graph(tree_model, feature_names, X_train, y_train):
         is_leaf = tree_.children_left[node_id] == tree_.children_right[node_id]
 
         if is_leaf:
-            # 답을 내는 마디: 다수결로 예측값 결정
             predicted_class = 1 if n_positive >= (n_total - n_positive) else 0
-            label = f"인원 {n_total}명\n뇌졸중 {n_positive}명 ({ratio:.1f}%)\n예측: {'뇌졸중' if predicted_class==1 else '아님'}"
+            label = f"인원 {n_total}명\\n뇌졸중 {n_positive}명 ({ratio:.1f}%)\\n예측: {'뇌졸중' if predicted_class==1 else '아님'}"
             fill_color = "lightsalmon" if predicted_class == 1 else "lightblue"
-            graph.node(str(node_id), label=label, style="filled", fillcolor=fill_color)
+            dot_lines.append(f'{node_id} [label="{label}", fillcolor="{fill_color}"];')
         else:
-            feature = feature_names[tree_.feature[node_id]]
+            feature_col = feature_names_col[tree_.feature[node_id]]
+            feature_kr = feature_names_kr_dict[feature_col]
             threshold = tree_.threshold[node_id]
-            label = f"{feature} <= {threshold:.2f} ?\n인원 {n_total}명\n뇌졸중 {n_positive}명 ({ratio:.1f}%)"
-            graph.node(str(node_id), label=label, style="filled", fillcolor="white")
+            label = f"{feature_kr} <= {threshold:.2f} ?\\n인원 {n_total}명\\n뇌졸중 {n_positive}명 ({ratio:.1f}%)"
+            dot_lines.append(f'{node_id} [label="{label}", fillcolor="white"];')
 
             left_id = tree_.children_left[node_id]
             right_id = tree_.children_right[node_id]
@@ -343,32 +361,40 @@ def build_tree_graph(tree_model, feature_names, X_train, y_train):
             recurse(left_id)
             recurse(right_id)
 
-            graph.edge(str(node_id), str(left_id), label="예")
-            graph.edge(str(node_id), str(right_id), label="아니요")
+            dot_lines.append(f'{node_id} -> {left_id} [label="예"];')
+            dot_lines.append(f'{node_id} -> {right_id} [label="아니요"];')
 
     recurse(0)
-    return graph
+    dot_lines.append("}")
+    return "\n".join(dot_lines)
 
-tree_graph = build_tree_graph(tree_model, selected_features, X_train.reset_index(drop=True), y_train.reset_index(drop=True))
-st.graphviz_chart(tree_graph)
+tree_dot_string = build_tree_dot(
+    tree_model,
+    selected_features,
+    feature_name_kr,
+    X_train.reset_index(drop=True),
+    y_train.reset_index(drop=True)
+)
+
+st.graphviz_chart(tree_dot_string)
 
 # -----------------------------
-# 9. 트리 요약 정보
+# 10. 트리 요약 정보
 # -----------------------------
 st.subheader("6️⃣ 트리 요약")
 
 tree_ = tree_model.tree_
-n_nodes = tree_.node_count
 is_leaf_array = (tree_.children_left == tree_.children_right)
 leaf_indices = np.where(is_leaf_array)[0]
 
 # 각 잎(답을 내는 마디)의 예측값 계산
 node_indicator = tree_model.decision_path(X_train)
+y_train_reset = y_train.reset_index(drop=True)
 leaf_predict_counts = {"뇌졸중": 0, "아님": 0}
 
 for leaf_id in leaf_indices:
     sample_mask = node_indicator[:, leaf_id].toarray().ravel().astype(bool)
-    samples_y = y_train.reset_index(drop=True)[sample_mask]
+    samples_y = y_train_reset[sample_mask]
     n_total = len(samples_y)
     n_positive = int(samples_y.sum())
     predicted_class = 1 if n_positive >= (n_total - n_positive) else 0
@@ -389,7 +415,7 @@ used_features = [selected_features[i] for i in used_features_idx]
 
 st.write("- 이 나무가 실제로 물어본 속성:")
 for f in used_features:
-    st.write(f"  - {f}")
+    st.write(f"  - {feature_name_kr[f]}")
 
 if len(used_features) == 0:
     st.write("  - (트리가 한 번도 나뉘지 않아서 물어본 속성이 없습니다.)")
